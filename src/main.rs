@@ -9,4 +9,6 @@ fn main() {
     println!("{}", cpu);
     cpu.step();
     println!("{}", cpu);
+    cpu.step();
+    println!("{}", cpu);
 }

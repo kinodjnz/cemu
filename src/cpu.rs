@@ -29,6 +29,16 @@ impl SignedLt for Word {
     }
 }
 
+pub trait Sra {
+    fn sra(&self, shamt: usize) -> Self;
+}
+
+impl Sra for Word {
+    fn sra(&self, shamt: usize) -> Self {
+        (((self.0 as i32) >> shamt) as u32).into_word()
+    }
+}
+
 pub trait BitField<T> {
     fn bf(&self, msb: usize, lsb: usize) -> T;
     fn bit(&self, b: usize) -> bool;
@@ -60,6 +70,17 @@ pub trait Instruction<T, W>: BitField<T> {
     fn i_imm(&self) -> W;
     fn b_imm(&self) -> W;
     fn s_imm(&self) -> W;
+    fn ci_imm(&self) -> W;
+    fn ciw_uimm(&self) -> W;
+    fn clw_uimm(&self) -> W;
+    fn csw_uimm(&self) -> W;
+    fn cj_imm(&self) -> W;
+    fn ci16_imm(&self) -> W;
+    fn ciu_imm(&self) -> W;
+    fn ci_shamt(&self) -> usize;
+    fn cb_imm(&self) -> W;
+    fn clwsp_uimm(&self) -> W;
+    fn cswsp_uimm(&self) -> W;
 }
 
 impl Instruction<u32, Word> for Word {
@@ -90,6 +111,85 @@ impl Instruction<u32, Word> for Word {
         (self.bf(31, 25) << 5 | self.bf(11, 7))
             .into_word()
             .sign_expand(12)
+    }
+
+    fn ci_imm(&self) -> Word {
+        (self.bf(12, 12) << 5 | self.bf(6, 2))
+            .into_word()
+            .sign_expand(6)
+    }
+
+    fn ciw_uimm(&self) -> Word {
+        (self.bf(10, 7) << 6 | self.bf(12, 11) << 4 | self.bf(5, 5) << 3 | self.bf(6, 6) << 2)
+            .into_word()
+            .zero_expand(10)
+    }
+
+    fn clw_uimm(&self) -> Word {
+        (self.bf(5, 5) << 6 | self.bf(12, 10) << 3 | self.bf(6, 6) << 2)
+            .into_word()
+            .zero_expand(7)
+    }
+
+    fn csw_uimm(&self) -> Word {
+        (self.bf(5, 5) << 6 | self.bf(12, 10) << 3 | self.bf(6, 6) << 2)
+            .into_word()
+            .zero_expand(7)
+    }
+
+    fn cj_imm(&self) -> Word {
+        (self.bf(12, 12) << 11
+            | self.bf(8, 8) << 10
+            | self.bf(10, 9) << 8
+            | self.bf(6, 6) << 7
+            | self.bf(7, 7) << 6
+            | self.bf(2, 2) << 5
+            | self.bf(11, 11) << 4
+            | self.bf(5, 3) << 1)
+            .into_word()
+            .sign_expand(12)
+    }
+
+    fn ci16_imm(&self) -> Word {
+        (self.bf(12, 12) << 9
+            | self.bf(4, 3) << 7
+            | self.bf(5, 5) << 6
+            | self.bf(2, 2) << 5
+            | self.bf(6, 6) << 4)
+            .into_word()
+            .sign_expand(10)
+    }
+
+    fn ciu_imm(&self) -> Word {
+        (self.bf(12, 12) << 17 | self.bf(6, 2) << 12)
+            .into_word()
+            .sign_expand(18)
+    }
+
+    fn ci_shamt(&self) -> usize {
+        self.bf(6, 2) as usize
+    }
+
+    fn cb_imm(&self) -> Word {
+        (self.bf(12, 12) << 8
+            | self.bf(6, 5) << 6
+            | self.bf(2, 2) << 5
+            | self.bf(11, 10) << 3
+            | self.bf(4, 3) << 1)
+            .into_word()
+            .sign_expand(9)
+    }
+
+    fn clwsp_uimm(&self) -> Word {
+        (self.bf(3, 2) << 6 | self.bf(12, 12) << 5 | self.bf(6, 4) << 2)
+            .into_word()
+            .zero_expand(8)
+    }
+
+    fn cswsp_uimm(&self) -> Word {
+        (self.bf(8, 7) << 6 | self.bf(12, 9) << 2)
+            .into_word()
+            .zero_expand(8)
     }
 }
 
@@ -165,7 +265,7 @@ impl Cpu {
         }
     }
 
-    fn read_reg(&mut self, rs: u32) -> Word {
+    fn read_reg(&self, rs: u32) -> Word {
         self.regs[rs as usize]
     }
 
@@ -226,7 +326,7 @@ impl Cpu {
                     }
                 }
                 0x03 => {
-                    // load_
+                    // load
                     let rd = inst.bf(11, 7);
                     let rs1 = inst.bf(19, 15);
                     let addr = self.read_reg(rs1) + inst.i_imm();
@@ -268,7 +368,7 @@ impl Cpu {
                         (7, _) => self.write_reg(rd, data1 & data2), // andi
                         (1, 0x00) => self.write_reg(rd, data1 << shamt), // slli
                         (5, 0x00) => self.write_reg(rd, data1 >> shamt), // srli
-                        (5, 0x20) => self.write_reg(rd, ((data1.0 as i32) >> shamt).into_word()), // srai
+                        (5, 0x20) => self.write_reg(rd, data1.sra(shamt)), // srai
                         _ => panic!("unknown alu imm inst"),
                     }
                 }
@@ -288,7 +388,7 @@ impl Cpu {
                         (3, 0x00) => self.write_reg(rd, set_if(data1 < data2)), // sltu
                         (4, 0x00) => self.write_reg(rd, data1 ^ data2), // xor
                         (5, 0x00) => self.write_reg(rd, data1 >> shamt), // srl
-                        (5, 0x20) => self.write_reg(rd, ((data1.0 as i32) >> shamt).into_word()), // sra
+                        (5, 0x20) => self.write_reg(rd, data1.sra(shamt)), // sra
                         (6, 0x00) => self.write_reg(rd, data1 | data2), // or
                         (7, 0x00) => self.write_reg(rd, data1 & data2), // and
                         _ => panic!("unknown alu reg inst"),
@@ -299,6 +399,103 @@ impl Cpu {
         } else {
             // RVC instructions
             next_pc = self.pc + 2.into_word();
+            match (opcode & 3, inst.bf(15, 13)) {
+                (0, 0) => {
+                    // c.addi4spn
+                    let rd = inst.bf(4, 2) + 8;
+                    self.write_reg(rd, self.read_reg(2) + inst.ciw_uimm());
+                }
+                (0, 2) => {
+                    // c.lw
+                    let rd = inst.bf(4, 2) + 8;
+                    let rs = inst.bf(9, 7) + 8;
+                    self.write_reg(rd, self.load_word(self.read_reg(rs) + inst.clw_uimm()));
+                }
+                (0, 6) => {
+                    // c.sw
+                    let rs1 = inst.bf(9, 7) + 8;
+                    let rs2 = inst.bf(4, 2) + 8;
+                    self.store_word(self.read_reg(rs1) + inst.csw_uimm(), self.read_reg(rs2));
+                }
+                (1, 0) => {
+                    // c.nop / c.addi
+                    let rd = inst.bf(11, 7);
+                    self.write_reg(rd, self.read_reg(rd) + inst.ci_imm());
+                }
+                (1, 1) => {
+                    // c.jal
+                    self.write_reg(1, next_pc);
+                    next_pc = self.pc + inst.cj_imm();
+                }
+                (1, 2) => self.write_reg(inst.bf(11, 7), inst.ci_imm()), // c.li
+                (1, 3) => {
+                    let rd = inst.bf(11, 7);
+                    match rd {
+                        0 => panic!("unknown rvc li inst"),
+                        2 => self.write_reg(rd, self.read_reg(rd) + inst.ci16_imm()), // c.addi16sp
+                        _ => self.write_reg(rd, inst.ciu_imm()),                      // c.lui
+                    }
+                }
+                (1, 4) => {
+                    let rd = inst.bf(9, 7) + 8;
+                    let rs = inst.bf(4, 2) + 8;
+                    match (inst.bf(11, 10), inst.bf(6, 5), inst.bf(12, 12)) {
+                        (0, _, _) => self.write_reg(rd, self.read_reg(rd) >> inst.ci_shamt()), // c.srli
+                        (1, _, _) => self.write_reg(rd, self.read_reg(rd).sra(inst.ci_shamt())), // c.srai
+                        (2, _, _) => self.write_reg(rd, self.read_reg(rd) & inst.ci_imm()), // c.andi
+                        (3, 0, 0) => self.write_reg(rd, self.read_reg(rd) - self.read_reg(rs)), // c.sub
+                        (3, 1, 0) => self.write_reg(rd, self.read_reg(rd) ^ self.read_reg(rs)), // c.xor
+                        (3, 2, 0) => self.write_reg(rd, self.read_reg(rd) | self.read_reg(rs)), // c.or
+                        (3, 3, 0) => self.write_reg(rd, self.read_reg(rd) & self.read_reg(rs)), // c.and
+                        _ => panic!("unknown rvc arithmetic inst"),
+                    }
+                }
+                (1, 5) => next_pc = self.pc + inst.cj_imm(), // c.j
+                (1, 6) => {
+                    // c.beqz
+                    let rs = inst.bf(9, 7) + 8;
+                    if self.read_reg(rs) == 0.into_word() {
+                        next_pc = self.pc + inst.cb_imm();
+                    }
+                }
+                (1, 7) => {
+                    // c.bnez
+                    let rs = inst.bf(9, 7) + 8;
+                    if self.read_reg(rs) != 0.into_word() {
+                        next_pc = self.pc + inst.cb_imm();
+                    }
+                }
+                (2, 0) => {
+                    // c.slli
+                    let rd = inst.bf(11, 7);
+                    self.write_reg(rd, self.read_reg(rd) << inst.ci_shamt());
+                }
+                (2, 2) => {
+                    // c.lwsp
+                    let rd = inst.bf(11, 7);
+                    self.write_reg(rd, self.load_word(self.read_reg(2) + inst.clwsp_uimm()));
+                }
+                (2, 4) => {
+                    match (inst.bf(12, 12), inst.bf(11, 7), inst.bf(6, 2)) {
+                        (0, rs, 0) if rs != 0 => next_pc = self.read_reg(rs) & !1.into_word(), // c.jr
+                        (0, rd, rs) if rd != 0 => self.write_reg(rd, self.read_reg(rs)), // c.mv
+                        (1, 0, 0) => (),                                                 // c.ebreak
+                        (1, rs, 0) => {
+                            // c.jalr
+                            self.write_reg(1, next_pc);
+                            next_pc = self.read_reg(rs) & !1.into_word();
+                        }
+                        (1, rd, rs) => self.write_reg(rd, self.read_reg(rd) + self.read_reg(rs)), // c.add
+                        _ => panic!("unexpected rvc reg inst"),
+                    }
+                }
+                (2, 6) => {
+                    // c.swsp
+                    let rs = inst.bf(6, 2);
+                    self.store_word(self.read_reg(2) + inst.cswsp_uimm(), self.read_reg(rs));
+                }
+                _ => panic!("unknown rvc inst"),
+            }
         }
         self.pc = next_pc;
     }
