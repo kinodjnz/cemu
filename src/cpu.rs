@@ -1,7 +1,7 @@
 use std::fmt;
 use std::num::Wrapping;
 
-type Word = Wrapping<u32>;
+pub type Word = Wrapping<u32>;
 
 pub trait IntoWord {
     fn into_word(self) -> Word;
@@ -39,6 +39,96 @@ impl Sra for Word {
     }
 }
 
+pub trait Mulh {
+    fn mulh(&self, rhs: &Self) -> Self;
+}
+
+impl Mulh for Word {
+    fn mulh(&self, rhs: &Self) -> Self {
+        ((((self.0 as i32 as i64) * (rhs.0 as i32 as i64)) >> 32) as u32).into_word()
+    }
+}
+
+pub trait Mulhu {
+    fn mulhu(&self, rhs: &Self) -> Self;
+}
+
+impl Mulhu for Word {
+    fn mulhu(&self, rhs: &Self) -> Self {
+        ((((self.0 as i64) * (rhs.0 as i64)) >> 32) as u32).into_word()
+    }
+}
+
+pub trait Mulhsu {
+    fn mulhsu(&self, rhs: &Self) -> Self;
+}
+
+impl Mulhsu for Word {
+    fn mulhsu(&self, rhs: &Self) -> Self {
+        ((((self.0 as i32 as i64) * (rhs.0 as i64)) >> 32) as u32).into_word()
+    }
+}
+
+pub trait Div {
+    fn div(&self, rhs: &Self) -> Self;
+}
+
+impl Div for Word {
+    fn div(&self, rhs: &Self) -> Self {
+        if rhs.0 == 0 {
+            (-1).into_word()
+        } else if self.0 as i32 == std::i32::MIN && rhs.0 as i32 == -1 {
+            std::i32::MIN.into_word()
+        } else {
+            ((self.0 as i32) / (rhs.0 as i32)).into_word()
+        }
+    }
+}
+
+pub trait Divu {
+    fn divu(&self, rhs: &Self) -> Self;
+}
+
+impl Divu for Word {
+    fn divu(&self, rhs: &Self) -> Self {
+        if rhs.0 == 0 {
+            std::u32::MAX.into_word()
+        } else {
+            self / rhs
+        }
+    }
+}
+
+pub trait Rem {
+    fn rem(&self, rhs: &Self) -> Self;
+}
+
+impl Rem for Word {
+    fn rem(&self, rhs: &Self) -> Self {
+        if rhs.0 == 0 {
+            *self
+        } else if self.0 as i32 == std::i32::MIN && rhs.0 as i32 == -1 {
+            0.into_word()
+        } else {
+            ((self.0 as i32) % (rhs.0 as i32)).into_word()
+        }
+    }
+}
+
+pub trait Remu {
+    fn remu(&self, rhs: &Self) -> Self;
+}
+
+impl Remu for Word {
+    fn remu(&self, rhs: &Self) -> Self {
+        if rhs.0 == 0 {
+            *self
+        } else {
+            self % rhs
+        }
+    }
+}
+
 pub trait BitField<T> {
     fn bf(&self, msb: usize, lsb: usize) -> T;
     fn bit(&self, b: usize) -> bool;
@@ -64,7 +154,7 @@ impl BitField<u32> for Word {
     }
 }
 
-pub trait Instruction<T, W>: BitField<T> {
+pub trait Immediate<T, W>: BitField<T> {
     fn u_imm(&self) -> W;
     fn j_imm(&self) -> W;
     fn i_imm(&self) -> W;
@@ -81,9 +171,10 @@ pub trait Instruction<T, W>: BitField<T> {
     fn cb_imm(&self) -> W;
     fn clwsp_uimm(&self) -> W;
     fn cswsp_uimm(&self) -> W;
+    fn csr_uimm(&self) -> W;
 }
 
-impl Instruction<u32, Word> for Word {
+impl Immediate<u32, Word> for Word {
     fn u_imm(&self) -> Word {
         (self.bf(31, 12) << 12).into_word()
     }
@@ -98,7 +189,7 @@ impl Instruction<u32, Word> for Word {
     }
 
     fn i_imm(&self) -> Word {
-        self.bf(31, 20).into_word()
+        self.bf(31, 20).into_word().sign_expand(12)
     }
 
     fn b_imm(&self) -> Word {
@@ -191,12 +282,17 @@ impl Instruction<u32, Word> for Word {
             .into_word()
             .zero_expand(8)
     }
+
+    fn csr_uimm(&self) -> Word {
+        self.bf(19, 15).into_word().zero_expand(5)
+    }
 }
 
 #[derive(Debug)]
 pub struct Cpu {
-    pc: Word,
+    pub pc: Word,
     regs: [Word; 32],
+    csr_regs: [Word; 4096],
     pub ram: Vec<Word>,
 }
 
@@ -221,13 +317,15 @@ impl fmt::Display for Cpu {
 
 impl Cpu {
     const RAM_SIZE: usize = 0x10000000;
-    const RAM_MASK_IN_WORD: usize = (Self::RAM_SIZE - 1) >> 2;
+    const RAM_SIZE_IN_WORD: usize = Self::RAM_SIZE >> 2;
+    const RAM_MASK_IN_WORD: usize = Self::RAM_SIZE_IN_WORD - 1;
 
     pub fn new() -> Cpu {
         Cpu {
             pc: 0x20000000.into_word(),
             regs: [0.into_word(); 32],
-            ram: vec![0.into_word(); 0x10],
+            csr_regs: [0.into_word(); 4096],
+            ram: vec![0.into_word(); Self::RAM_SIZE_IN_WORD],
         }
     }
 
@@ -235,7 +333,7 @@ impl Cpu {
         let a = (addr >> 2).0 as usize;
         if addr & 2.into_word() != 0.into_word() {
             (self.ram[a & Self::RAM_MASK_IN_WORD] >> 16)
-                | (self.ram[(a + 1) & Self::RAM_MASK_IN_WORD] & 0xffff.into_word())
+                | ((self.ram[(a + 1) & Self::RAM_MASK_IN_WORD] & 0xffff.into_word()) << 16)
         } else {
             self.ram[a & Self::RAM_MASK_IN_WORD]
         }
@@ -267,6 +365,12 @@ impl Cpu {
 
     fn read_reg(&self, rs: u32) -> Word {
         self.regs[rs as usize]
+    }
+
+    fn csrr<F: FnOnce(Word) -> Word>(&mut self, csr: u32, f: F) -> Word {
+        let old = self.csr_regs[csr as usize];
+        self.csr_regs[csr as usize] = f(old);
+        old
     }
 
     pub fn step(&mut self) {
@@ -362,7 +466,7 @@ impl Cpu {
                     match (inst.bf(14, 12), inst.bf(31, 25)) {
                         (0, _) => self.write_reg(rd, data1 + data2), // addi
                         (2, _) => self.write_reg(rd, set_if(data1.slt(&data2))), // slti
-                        (3, _) => self.write_reg(rd, set_if(data1 < data2)), // sltu
+                        (3, _) => self.write_reg(rd, set_if(data1 < data2)), // sltiu
                         (4, _) => self.write_reg(rd, data1 ^ data2), // xori
                         (6, _) => self.write_reg(rd, data1 | data2), // ori
                         (7, _) => self.write_reg(rd, data1 & data2), // andi
@@ -391,10 +495,36 @@ impl Cpu {
                         (5, 0x20) => self.write_reg(rd, data1.sra(shamt)), // sra
                         (6, 0x00) => self.write_reg(rd, data1 | data2), // or
                         (7, 0x00) => self.write_reg(rd, data1 & data2), // and
+                        (0, 0x01) => self.write_reg(rd, data1 * data2), // mul
+                        (1, 0x01) => self.write_reg(rd, data1.mulh(&data2)), // mulh
+                        (2, 0x01) => self.write_reg(rd, data1.mulhsu(&data2)), // mulhsu
+                        (3, 0x01) => self.write_reg(rd, data1.mulhu(&data2)), // mulhu
+                        (4, 0x01) => self.write_reg(rd, data1.div(&data2)), // div
+                        (5, 0x01) => self.write_reg(rd, data1.divu(&data2)), // divu
+                        (6, 0x01) => self.write_reg(rd, data1.rem(&data2)), // rem
+                        (7, 0x01) => self.write_reg(rd, data1.remu(&data2)), // remu
                         _ => panic!("unknown alu reg inst"),
                     }
                 }
-                _ => unimplemented!(),
+                0x73 => {
+                    // csr
+                    let rd = inst.bf(11, 7);
+                    let rs1 = inst.bf(19, 15);
+                    let data1 = self.read_reg(rs1);
+                    let uimm1 = inst.csr_uimm();
+                    let csr = inst.bf(31, 20);
+                    let new_val = match inst.bf(14, 12) {
+                        1 => self.csrr(csr, |_| data1),      // csrrw
+                        2 => self.csrr(csr, |d| d | data1),  // csrrs
+                        3 => self.csrr(csr, |d| d & !data1), // csrrc
+                        5 => self.csrr(csr, |_| uimm1),      // csrrwi
+                        6 => self.csrr(csr, |d| d | uimm1),  // csrrsi
+                        7 => self.csrr(csr, |d| d & !uimm1), // csrrci
+                        _ => panic!("unknown csr inst"),
+                    };
+                    self.write_reg(rd, new_val);
+                }
+                _ => panic!("unknown non-rvc inst"),
             }
         } else {
             // RVC instructions
@@ -498,5 +628,14 @@ impl Cpu {
             }
         }
         self.pc = next_pc;
+    }
+
+    pub fn next_inst(&self) -> Word {
+        let inst = self.inst_read(self.pc);
+        if inst.bf(1, 0) == 3 {
+            inst
+        } else {
+            inst.bf(15, 0).into_word()
+        }
     }
 }
