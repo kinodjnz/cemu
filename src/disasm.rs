@@ -1,5 +1,6 @@
 use crate::cpu::{BitField, Immediate, Word};
 use std::fmt;
+use superslice::*;
 
 #[derive(Debug)]
 pub struct Register(u32);
@@ -22,31 +23,25 @@ pub struct Csr(u32);
 impl fmt::Display for Csr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let csr_names = [
-            (
-                0x300,
-                [
-                    "mstatus",
-                    "misa",
-                    "medeleg",
-                    "mideleg",
-                    "mie",
-                    "mtvec",
-                    "mcounteren",
-                ],
-            ),
-            (
-                0x340,
-                [
-                    "mscratch", "mepc", "mcause", "mtval", "mip", "0x345", "0x346",
-                ],
-            ),
+            (0x300, "mstatus"),
+            (0x301, "misa"),
+            (0x302, "medeleg"),
+            (0x303, "mideleg"),
+            (0x304, "mie"),
+            (0x305, "mtvec"),
+            (0x306, "mcounteren"),
+            (0x340, "mscratch"),
+            (0x341, "mepc"),
+            (0x342, "mcause"),
+            (0x343, "mtval"),
+            (0x344, "mip"),
         ];
-        csr_names
-            .iter()
-            .filter(|(reg, names)| *reg <= self.0 && self.0 < *reg + names.len() as u32)
-            .next()
-            .map(|(reg, names)| write!(f, "{}", names[(self.0 - reg) as usize]))
-            .unwrap_or_else(|| write!(f, "{:#03x}", self.0))
+        let i = csr_names.equal_range_by_key(&self.0, |(reg, _)| *reg);
+        if i.is_empty() {
+            write!(f, "{:#03x}", self.0)
+        } else {
+            write!(f, "{}", csr_names[i.start].1)
+        }
     }
 }
 
@@ -95,6 +90,8 @@ pub enum Instruction {
     Csrrwi(Register, Csr, Word),
     Csrrsi(Register, Csr, Word),
     Csrrci(Register, Csr, Word),
+    Ecall(),
+    Mret(),
     Mul(Register, Register, Register),
     Mulh(Register, Register, Register),
     Mulhsu(Register, Register, Register),
@@ -207,14 +204,18 @@ pub fn disasm(inst: Word) -> Instruction {
                 (7, 0x01) => Instruction::Remu(rd, rs1, rs2),
                 _ => Instruction::Unknown(inst),
             },
-            0x73 => match inst.bf(14, 12) {
-                1 => Instruction::Csrrw(rd, csr, rs1),
-                2 => Instruction::Csrrs(rd, csr, rs1),
-                3 => Instruction::Csrrc(rd, csr, rs1),
-                5 => Instruction::Csrrwi(rd, csr, inst.csr_uimm()),
-                6 => Instruction::Csrrsi(rd, csr, inst.csr_uimm()),
-                7 => Instruction::Csrrci(rd, csr, inst.csr_uimm()),
-                _ => Instruction::Unknown(inst),
+            0x73 => match inst.0 {
+                0x00000073 => Instruction::Ecall(),
+                0x30200073 => Instruction::Mret(),
+                _ => match inst.bf(14, 12) {
+                    1 => Instruction::Csrrw(rd, csr, rs1),
+                    2 => Instruction::Csrrs(rd, csr, rs1),
+                    3 => Instruction::Csrrc(rd, csr, rs1),
+                    5 => Instruction::Csrrwi(rd, csr, inst.csr_uimm()),
+                    6 => Instruction::Csrrsi(rd, csr, inst.csr_uimm()),
+                    7 => Instruction::Csrrci(rd, csr, inst.csr_uimm()),
+                    _ => Instruction::Unknown(inst),
+                },
             },
             _ => Instruction::Unknown(inst),
         }
@@ -272,16 +273,16 @@ pub struct LocatedInstruction<'a>(&'a Instruction, Word);
 impl fmt::Display for LocatedInstruction<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
-            Lui(rd, imm) => write!(f, "lui {}, {:#08x}", rd, imm),
-            Auipc(rd, imm) => write!(f, "auipc {}, {:#08x}", rd, self.1 + imm),
-            Jal(rd, imm) => write!(f, "jal {}, {:#08x}", rd, self.1 + imm),
+            Lui(rd, imm) => write!(f, "lui {}, {:#010x}", rd, imm),
+            Auipc(rd, imm) => write!(f, "auipc {}, {:#010x}", rd, self.1 + imm),
+            Jal(rd, imm) => write!(f, "jal {}, {:#010x}", rd, self.1 + imm),
             Jalr(rd, rs1, imm) => write!(f, "jalr {}, {}({})", rd, imm.0 as i32, rs1),
-            Beq(rs1, rs2, imm) => write!(f, "beq {}, {}, {:#08x}", rs1, rs2, self.1 + imm),
-            Bne(rs1, rs2, imm) => write!(f, "bne {}, {}, {:#08x}", rs1, rs2, self.1 + imm),
-            Blt(rs1, rs2, imm) => write!(f, "blt {}, {}, {:#08x}", rs1, rs2, self.1 + imm),
-            Bge(rs1, rs2, imm) => write!(f, "bge {}, {}, {:#08x}", rs1, rs2, self.1 + imm),
-            Bltu(rs1, rs2, imm) => write!(f, "bltu {}, {}, {:#08x}", rs1, rs2, self.1 + imm),
-            Bgeu(rs1, rs2, imm) => write!(f, "bgeu {}, {}, {:#08x}", rs1, rs2, self.1 + imm),
+            Beq(rs1, rs2, imm) => write!(f, "beq {}, {}, {:#010x}", rs1, rs2, self.1 + imm),
+            Bne(rs1, rs2, imm) => write!(f, "bne {}, {}, {:#010x}", rs1, rs2, self.1 + imm),
+            Blt(rs1, rs2, imm) => write!(f, "blt {}, {}, {:#010x}", rs1, rs2, self.1 + imm),
+            Bge(rs1, rs2, imm) => write!(f, "bge {}, {}, {:#010x}", rs1, rs2, self.1 + imm),
+            Bltu(rs1, rs2, imm) => write!(f, "bltu {}, {}, {:#010x}", rs1, rs2, self.1 + imm),
+            Bgeu(rs1, rs2, imm) => write!(f, "bgeu {}, {}, {:#010x}", rs1, rs2, self.1 + imm),
             Lb(rd, rs1, imm) => write!(f, "lb {}, {}({})", rd, imm.0 as i32, rs1),
             Lh(rd, rs1, imm) => write!(f, "lh {}, {}({})", rd, imm.0 as i32, rs1),
             Lw(rd, rs1, imm) => write!(f, "lw {}, {}({})", rd, imm.0 as i32, rs1),
@@ -315,6 +316,8 @@ impl fmt::Display for LocatedInstruction<'_> {
             Csrrwi(rd, csr, imm) => write!(f, "csrrwi {}, {}, {}", rd, csr, imm),
             Csrrsi(rd, csr, imm) => write!(f, "csrrsi {}, {}, {}", rd, csr, imm),
             Csrrci(rd, csr, imm) => write!(f, "csrrci {}, {}, {}", rd, csr, imm),
+            Ecall() => write!(f, "ecall"),
+            Mret() => write!(f, "mret"),
             Mul(rd, rs1, rs2) => write!(f, "mul {}, {}, {}", rd, rs1, rs2),
             Mulh(rd, rs1, rs2) => write!(f, "mulh {}, {}, {}", rd, rs1, rs2),
             Mulhsu(rd, rs1, rs2) => write!(f, "mulhsu {}, {}, {}", rd, rs1, rs2),
@@ -328,10 +331,10 @@ impl fmt::Display for LocatedInstruction<'_> {
             CSw(rs2, rs1, imm) => write!(f, "sw {}, {}({})", rs2, imm, rs1),
             CNop() => write!(f, "nop"),
             CAddi(rd, imm) => write!(f, "addi {}, {}, {}", rd, rd, imm.0 as i32),
-            CJal(imm) => write!(f, "jal ra, {:#08x}", self.1 + imm),
+            CJal(imm) => write!(f, "jal ra, {:#010x}", self.1 + imm),
             CLi(rd, imm) => write!(f, "li {}, {}", rd, imm.0 as i32),
             CAddi16sp(imm) => write!(f, "addi sp, sp, {}", imm.0 as i32),
-            CLui(rd, imm) => write!(f, "lui {}, {:#08x}", rd, imm),
+            CLui(rd, imm) => write!(f, "lui {}, {:#010x}", rd, imm),
             CSrli(rd, shamt) => write!(f, "srli {}, {}, {}", rd, rd, shamt),
             CSrai(rd, shamt) => write!(f, "srai {}, {}, {}", rd, rd, shamt),
             CAndi(rd, imm) => write!(f, "andi {}, {}, {}", rd, rd, imm.0 as i32),
@@ -339,9 +342,9 @@ impl fmt::Display for LocatedInstruction<'_> {
             CXor(rd, rs) => write!(f, "xor {}, {}, {}", rd, rd, rs),
             COr(rd, rs) => write!(f, "or {}, {}, {}", rd, rd, rs),
             CAnd(rd, rs) => write!(f, "and {}, {}, {}", rd, rd, rs),
-            CJ(imm) => write!(f, "j {:#08x}", self.1 + imm),
-            CBeqz(rs, imm) => write!(f, "beqz {}, {:#08x}", rs, self.1 + imm),
-            CBnez(rs, imm) => write!(f, "bnez {}, {:#08x}", rs, self.1 + imm),
+            CJ(imm) => write!(f, "j {:#010x}", self.1 + imm),
+            CBeqz(rs, imm) => write!(f, "beqz {}, {:#010x}", rs, self.1 + imm),
+            CBnez(rs, imm) => write!(f, "bnez {}, {:#010x}", rs, self.1 + imm),
             CSlli(rd, shamt) => write!(f, "slli {}, {}, {}", rd, rd, shamt),
             CLwsp(rd, imm) => write!(f, "lw {}, {}(sp)", rd, imm.0 as i32),
             CJr(rd) => write!(f, "jalr zero, 0({})", rd),

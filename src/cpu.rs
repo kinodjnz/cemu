@@ -1,5 +1,9 @@
+use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::fmt;
 use std::num::Wrapping;
+use std::rc::Rc;
+use superslice::*;
 
 pub type Word = Wrapping<u32>;
 
@@ -288,17 +292,83 @@ impl Immediate<u32, Word> for Word {
     }
 }
 
-#[derive(Debug)]
+pub trait MemoryMappedIo {
+    fn read(&self, addr: Word, cpu: &Cpu) -> Word;
+    fn write(&mut self, addr: Word, data: Word, cpu: &Cpu);
+}
+
+pub struct MemoryMap {
+    start: Word,
+    len: Word,
+    io: Rc<RefCell<dyn MemoryMappedIo>>,
+}
+
+impl MemoryMap {
+    pub fn new(start: u32, len: u32, io: Rc<RefCell<dyn MemoryMappedIo>>) -> MemoryMap {
+        MemoryMap {
+            start: start.into_word(),
+            len: len.into_word(),
+            io,
+        }
+    }
+}
+
+struct MachineTimer {
+    time: u64,
+    timecmp: u64,
+}
+
+impl MachineTimer {
+    fn new() -> MachineTimer {
+        MachineTimer {
+            time: 0,
+            timecmp: 0xffff_ffff_ffff_ffffu64,
+        }
+    }
+
+    fn progress(&mut self, inc: u64) {
+        self.time += inc;
+    }
+
+    fn is_intr(&self) -> bool {
+        self.time >= self.timecmp
+    }
+}
+
+impl MemoryMappedIo for MachineTimer {
+    fn read(&self, addr: Word, _cpu: &Cpu) -> Word {
+        match (addr.0 >> 2) & 3 {
+            0 => (self.time as u32).into_word(),
+            1 => ((self.time >> 32) as u32).into_word(),
+            2 => (self.timecmp as u32).into_word(),
+            _ => ((self.timecmp >> 32) as u32).into_word(),
+        }
+    }
+
+    fn write(&mut self, addr: Word, data: Word, _cpu: &Cpu) {
+        match (addr.0 >> 2) & 3 {
+            0 => self.time = (self.time & (0xffff_ffff << 32)) | data.0 as u64,
+            1 => self.time = (self.time & 0xffff_ffff) | ((data.0 as u64) << 32),
+            2 => self.timecmp = (self.timecmp & (0xffff_ffff << 32)) | data.0 as u64,
+            _ => self.timecmp = (self.timecmp & 0xffff_ffff) | ((data.0 as u64) << 32),
+        }
+    }
+}
+
 pub struct Cpu {
     pub pc: Word,
+    pub cycle: u64,
     regs: [Word; 32],
     csr_regs: [Word; 4096],
+    machine_timer: Rc<RefCell<MachineTimer>>,
+    memory_map: Vec<MemoryMap>,
     pub ram: Vec<Word>,
 }
 
 impl fmt::Display for Cpu {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "pc: {:08x}", self.pc)?;
+        writeln!(f, "cycle: {:08x}", self.cycle)?;
         let names = [
             "zero", "  ra", "  sp", "  gp", "  tp", "  t0", "  t1", "  t2", //
             "  s0", "  s1", "  a0", "  a1", "  a2", "  a3", "  a4", "  a5", //
@@ -316,17 +386,30 @@ impl fmt::Display for Cpu {
 }
 
 impl Cpu {
+    const RAM_START: u32 = 0x20000000;
     const RAM_SIZE: usize = 0x10000000;
     const RAM_SIZE_IN_WORD: usize = Self::RAM_SIZE >> 2;
     const RAM_MASK_IN_WORD: usize = Self::RAM_SIZE_IN_WORD - 1;
+    const RAM_PREFIX_MASK: u32 = !(Self::RAM_SIZE as u32 - 1);
 
     pub fn new() -> Cpu {
-        Cpu {
-            pc: 0x20000000.into_word(),
+        let mut cpu = Cpu {
+            pc: Self::RAM_START.into_word(),
+            cycle: 0,
             regs: [0.into_word(); 32],
             csr_regs: [0.into_word(); 4096],
+            machine_timer: Rc::new(RefCell::new(MachineTimer::new())),
+            memory_map: vec![],
             ram: vec![0.into_word(); Self::RAM_SIZE_IN_WORD],
-        }
+        };
+        cpu.memory_map
+            .push(MemoryMap::new(0x30002000, 16, cpu.machine_timer.clone()));
+        cpu
+    }
+
+    pub fn add_memory_map(&mut self, memory_map: MemoryMap) {
+        self.memory_map.push(memory_map);
+        self.memory_map.sort_by_key(|map| map.start);
     }
 
     fn inst_read(&self, addr: Word) -> Word {
@@ -339,22 +422,63 @@ impl Cpu {
         }
     }
 
+    fn find_memory_mapped_io(&self, addr: Word) -> Option<(Rc<RefCell<dyn MemoryMappedIo>>, Word)> {
+        let range = self.memory_map.equal_range_by(|map| match map {
+            _ if addr < map.start => Ordering::Greater,
+            _ if map.start <= addr && addr < map.start + map.len => Ordering::Equal,
+            _ => Ordering::Less,
+        });
+        if range.is_empty() {
+            Option::None
+        } else {
+            let map = &self.memory_map[range.start];
+            Option::Some((
+                map.io.clone(),
+                (addr - map.start) & (map.len - 1.into_word()),
+            ))
+        }
+    }
+
     fn load_word(&self, addr: Word) -> Word {
-        self.ram[(addr >> 2).0 as usize & Self::RAM_MASK_IN_WORD]
+        if addr.0 & Self::RAM_PREFIX_MASK == Self::RAM_START {
+            self.ram[(addr >> 2).0 as usize & Self::RAM_MASK_IN_WORD]
+        } else if let Option::Some((map, addr)) = self.find_memory_mapped_io(addr) {
+            map.borrow().read(addr, self)
+        } else {
+            panic!("invalid address read: {:#010x}", addr.0);
+            // 0xdead_beefu32.into_word()
+        }
     }
 
     fn load_subword(&self, addr: Word) -> Word {
-        self.ram[(addr >> 2).0 as usize & Self::RAM_MASK_IN_WORD] >> ((addr.0 as usize & 3) * 8)
+        if addr.0 & Self::RAM_PREFIX_MASK == Self::RAM_START {
+            self.ram[(addr >> 2).0 as usize & Self::RAM_MASK_IN_WORD] >> ((addr.0 as usize & 3) * 8)
+        } else {
+            panic!("invalid subword read: {:#010x}", addr.0);
+            // 0xdead_beefu32.into_word()
+        }
     }
 
     fn store_word(&mut self, addr: Word, data: Word) {
-        self.ram[(addr >> 2).0 as usize & Self::RAM_MASK_IN_WORD] = data;
+        if addr.0 & Self::RAM_PREFIX_MASK == Self::RAM_START {
+            self.ram[(addr >> 2).0 as usize & Self::RAM_MASK_IN_WORD] = data;
+        } else if let Option::Some((map, addr)) = self.find_memory_mapped_io(addr) {
+            map.borrow_mut().write(addr, data, self)
+        } else {
+            panic!("invalid address write: {:#010x}", addr.0);
+        }
     }
 
     fn store_subword(&mut self, addr: Word, data: Word, bits: usize) {
-        let old = self.ram[(addr >> 2).0 as usize & Self::RAM_MASK_IN_WORD];
-        let mask = ((1.into_word() << bits) - 1.into_word()) << ((addr.0 as usize & 3) * 8);
-        self.ram[(addr >> 2).0 as usize & Self::RAM_MASK_IN_WORD] = (old & !mask) | (data & mask);
+        if addr.0 & Self::RAM_PREFIX_MASK == Self::RAM_START {
+            let old = self.ram[(addr >> 2).0 as usize & Self::RAM_MASK_IN_WORD];
+            let shift = (addr.0 as usize & 3) * 8;
+            let mask = ((1 << bits) - 1).into_word() << shift;
+            self.ram[(addr >> 2).0 as usize & Self::RAM_MASK_IN_WORD] =
+                (old & !mask) | ((data << shift) & mask);
+        } else {
+            panic!("invalid subword write: {:#010x}", addr.0);
+        }
     }
 
     fn write_reg(&mut self, rd: u32, val: Word) {
@@ -374,7 +498,35 @@ impl Cpu {
     }
 
     pub fn step(&mut self) {
+        self.machine_timer.borrow_mut().progress(1);
+        self.cycle += 1;
+        self.csr_regs[0xc00] = ((self.cycle & 0xffff_ffff) as u32).into_word();
+        self.csr_regs[0xc80] = ((self.cycle >> 32) as u32).into_word();
+        self.csr_regs[0xc01] = ((self.cycle & 0xffff_ffff) as u32).into_word();
+        self.csr_regs[0xc81] = ((self.cycle >> 32) as u32).into_word();
+        let interrupt = |cpu: &mut Cpu, mcause: u32| {
+            let mstatus = cpu.csr_regs[0x300];
+            cpu.csr_regs[0x300] = ((mstatus & !0x80.into_word())
+                | (mstatus.bf(3, 3).into_word() << 7))
+                & !8.into_word();
+            cpu.csr_regs[0x342] = mcause.into_word();
+            cpu.csr_regs[0x341] = cpu.pc;
+            cpu.pc = cpu.csr_regs[0x305] & !1.into_word();
+        };
+        if self.csr_regs[0x300].0 & 8 != 0
+            && self.csr_regs[0x304].0 & 0x80 != 0
+            && self.machine_timer.borrow().is_intr()
+        {
+            interrupt(self, 0x80000007u32);
+            // println!("timer interrupt!");
+            return;
+        }
         let inst = self.inst_read(self.pc);
+        if inst == 0x00000073.into_word() {
+            // ecall
+            interrupt(self, 11);
+            return;
+        }
         let opcode = inst.bf(6, 0);
         let mut next_pc: Word;
         let set_if = |b: bool| if b { 1.into_word() } else { 0.into_word() };
@@ -510,19 +662,31 @@ impl Cpu {
                     // csr
                     let rd = inst.bf(11, 7);
                     let rs1 = inst.bf(19, 15);
-                    let data1 = self.read_reg(rs1);
-                    let uimm1 = inst.csr_uimm();
-                    let csr = inst.bf(31, 20);
-                    let new_val = match inst.bf(14, 12) {
-                        1 => self.csrr(csr, |_| data1),      // csrrw
-                        2 => self.csrr(csr, |d| d | data1),  // csrrs
-                        3 => self.csrr(csr, |d| d & !data1), // csrrc
-                        5 => self.csrr(csr, |_| uimm1),      // csrrwi
-                        6 => self.csrr(csr, |d| d | uimm1),  // csrrsi
-                        7 => self.csrr(csr, |d| d & !uimm1), // csrrci
-                        _ => panic!("unknown csr inst"),
-                    };
-                    self.write_reg(rd, new_val);
+                    match inst.0 {
+                        0x30200073 => {
+                            // mret
+                            let mstatus = self.csr_regs[0x300];
+                            self.csr_regs[0x300] = ((mstatus & !8.into_word())
+                                | (mstatus.bf(7, 7).into_word() << 3))
+                                | 0x80.into_word();
+                            next_pc = self.csr_regs[0x341] & !1.into_word();
+                        }
+                        _ => {
+                            let data1 = self.read_reg(rs1);
+                            let uimm1 = inst.csr_uimm();
+                            let csr = inst.bf(31, 20);
+                            let new_val = match inst.bf(14, 12) {
+                                1 => self.csrr(csr, |_| data1),      // csrrw
+                                2 => self.csrr(csr, |d| d | data1),  // csrrs
+                                3 => self.csrr(csr, |d| d & !data1), // csrrc
+                                5 => self.csrr(csr, |_| uimm1),      // csrrwi
+                                6 => self.csrr(csr, |d| d | uimm1),  // csrrsi
+                                7 => self.csrr(csr, |d| d & !uimm1), // csrrci
+                                _ => panic!("unknown csr inst"),
+                            };
+                            self.write_reg(rd, new_val);
+                        }
+                    }
                 }
                 _ => panic!("unknown non-rvc inst"),
             }
