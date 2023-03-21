@@ -43,8 +43,6 @@ impl Uart {
     }
 }
 
-
-
 impl MemoryMappedIo for Uart {
     fn read(&mut self, addr: Word, _cpu: &Cpu) -> Word {
         match (addr.0 >> 2) & 1 {
