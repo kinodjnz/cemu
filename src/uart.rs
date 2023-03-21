@@ -18,11 +18,10 @@ impl Uart {
     pub fn new() -> Result<Uart, Error> {
         let stdin = io::stdin();
         let stdin_fd = stdin.as_raw_fd();
-        fcntl::fcntl(stdin_fd, fcntl::FcntlArg::F_SETFL(fcntl::OFlag::O_NONBLOCK))?;
         let termios = Termios::from_fd(stdin_fd).unwrap();
-        let mut new_termios = termios.clone();
+        let mut new_termios = termios;
         new_termios.c_lflag &= !(termios::ICANON | termios::ECHO);
-        termios::tcsetattr(stdin_fd, termios::TCSANOW, &mut new_termios).unwrap();
+        termios::tcsetattr(stdin_fd, termios::TCSANOW, &new_termios).unwrap();
 
         Ok(Uart {
             stdin,
@@ -30,7 +29,21 @@ impl Uart {
             step_count: INTERRUPT_INTERVAL,
         })
     }
+
+    fn read_nonblocking(&mut self) -> Result<u8, Error> {
+        let stdin_fd = self.stdin.as_raw_fd();
+        let original_fl = fcntl::fcntl(stdin_fd, fcntl::FcntlArg::F_GETFL)?;
+        let original_fl = fcntl::OFlag::from_bits_truncate(original_fl);
+        let nonblocking = original_fl | fcntl::OFlag::O_NONBLOCK;
+        fcntl::fcntl(stdin_fd, fcntl::FcntlArg::F_SETFL(nonblocking))?;
+        let mut buf = [0; 1];
+        let result = self.stdin.read_exact(&mut buf);
+        fcntl::fcntl(stdin_fd, fcntl::FcntlArg::F_SETFL(original_fl))?;
+        result.map(|_| buf[0])
+    }
 }
+
+
 
 impl MemoryMappedIo for Uart {
     fn read(&mut self, addr: Word, _cpu: &Cpu) -> Word {
@@ -62,9 +75,8 @@ impl InterruptSource for Uart {
             if self.input.is_some() {
                 true
             } else {
-                let mut buf = [0; 1];
-                if let Ok(_) = self.stdin.read_exact(&mut buf) {
-                    self.input = Some(buf[0]);
+                if let Ok(c) = self.read_nonblocking() {
+                    self.input = Some(c);
                     true
                 } else {
                     false

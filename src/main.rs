@@ -43,13 +43,13 @@ fn main() -> Result<ExitCode, Error> {
     let mut cpu = Cpu::new();
     cpu.add_memory_map(MemoryMap::new(0x30001000, 8, uart.clone()));
     cpu.add_memory_map(MemoryMap::new(0x30004000, 8, intr.clone()));
-    cpu.add_memory_map(MemoryMap::new(0x40000000, 8, config.clone()));
-    intr.borrow_mut().add_source(uart.clone());
-    cpu.set_interrupt_source(intr.clone());
+    cpu.add_memory_map(MemoryMap::new(0x40000000, 8, config));
+    intr.borrow_mut().add_source(uart);
+    cpu.set_interrupt_source(intr);
 
     load_bin(&env::args().nth(1).unwrap(), &mut cpu.ram)?;
 
-    println!("{}", cpu);
+    println!("{cpu}");
     while cpu.cycle < 0xffff_ffff && cpu.pc != 0x2fff_ffff.into_word() {
         cpu.step();
     }
@@ -60,7 +60,7 @@ fn main() -> Result<ExitCode, Error> {
             disasm(cpu.next_inst()).with_pc(cpu.pc)
         );
         cpu.step();
-        println!("{}", cpu);
+        println!("{cpu}");
     }
     Ok(ExitCode::SUCCESS)
 }

@@ -524,14 +524,14 @@ impl Cpu {
         if self
             .interrupt_source
             .as_ref()
-            .map_or(false, |s| s.borrow_mut().step_intr(&self))
+            .map_or(false, |s| s.borrow_mut().step_intr(self))
             && self.csr_regs[0x300].0 & 8 != 0
             && self.csr_regs[0x304].0 & 0x800 != 0
         {
             interrupt(self, 0x8000000bu32);
             return;
         }
-        if self.machine_timer.borrow_mut().step_intr(&self)
+        if self.machine_timer.borrow_mut().step_intr(self)
             && self.csr_regs[0x300].0 & 8 != 0
             && self.csr_regs[0x304].0 & 0x80 != 0
         {
