@@ -10,7 +10,7 @@ impl CpuConfig {
 }
 
 impl MemoryMappedIo for CpuConfig {
-    fn read(&self, addr: Word, _cpu: &Cpu) -> Word {
+    fn read(&mut self, addr: Word, _cpu: &Cpu) -> Word {
         match (addr.0 >> 2) & 1 {
             0 => 0x01234567.into_word(),
             _ => Self::CLOCK.into_word(),

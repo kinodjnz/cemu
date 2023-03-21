@@ -7,3 +7,5 @@ edition = "2021"
 
 [dependencies]
 superslice = "1.0.0"
+termios = "0.3.3"
+nix = "0.26.2"

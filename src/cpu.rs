@@ -292,8 +292,12 @@ impl Immediate<u32, Word> for Word {
     }
 }
 
+pub trait InterruptSource {
+    fn step_intr(&mut self, _cpu: &Cpu) -> bool;
+}
+
 pub trait MemoryMappedIo {
-    fn read(&self, addr: Word, cpu: &Cpu) -> Word;
+    fn read(&mut self, addr: Word, cpu: &Cpu) -> Word;
     fn write(&mut self, addr: Word, data: Word, cpu: &Cpu);
 }
 
@@ -325,18 +329,10 @@ impl MachineTimer {
             timecmp: 0xffff_ffff_ffff_ffffu64,
         }
     }
-
-    fn progress(&mut self, inc: u64) {
-        self.time += inc;
-    }
-
-    fn is_intr(&self) -> bool {
-        self.time >= self.timecmp
-    }
 }
 
 impl MemoryMappedIo for MachineTimer {
-    fn read(&self, addr: Word, _cpu: &Cpu) -> Word {
+    fn read(&mut self, addr: Word, _cpu: &Cpu) -> Word {
         match (addr.0 >> 2) & 3 {
             0 => (self.time as u32).into_word(),
             1 => ((self.time >> 32) as u32).into_word(),
@@ -355,6 +351,13 @@ impl MemoryMappedIo for MachineTimer {
     }
 }
 
+impl InterruptSource for MachineTimer {
+    fn step_intr(&mut self, _cpu: &Cpu) -> bool {
+        self.time += 1;
+        self.time >= self.timecmp
+    }
+}
+
 pub struct Cpu {
     pub pc: Word,
     pub cycle: u64,
@@ -362,6 +365,7 @@ pub struct Cpu {
     csr_regs: [Word; 4096],
     machine_timer: Rc<RefCell<MachineTimer>>,
     memory_map: Vec<MemoryMap>,
+    interrupt_source: Option<Rc<RefCell<dyn InterruptSource>>>,
     pub ram: Vec<Word>,
 }
 
@@ -400,6 +404,7 @@ impl Cpu {
             csr_regs: [0.into_word(); 4096],
             machine_timer: Rc::new(RefCell::new(MachineTimer::new())),
             memory_map: vec![],
+            interrupt_source: Option::None,
             ram: vec![0.into_word(); Self::RAM_SIZE_IN_WORD],
         };
         cpu.memory_map
@@ -410,6 +415,10 @@ impl Cpu {
     pub fn add_memory_map(&mut self, memory_map: MemoryMap) {
         self.memory_map.push(memory_map);
         self.memory_map.sort_by_key(|map| map.start);
+    }
+
+    pub fn set_interrupt_source(&mut self, source: Rc<RefCell<dyn InterruptSource>>) {
+        self.interrupt_source = Some(source);
     }
 
     fn inst_read(&self, addr: Word) -> Word {
@@ -443,7 +452,7 @@ impl Cpu {
         if addr.0 & Self::RAM_PREFIX_MASK == Self::RAM_START {
             self.ram[(addr >> 2).0 as usize & Self::RAM_MASK_IN_WORD]
         } else if let Option::Some((map, addr)) = self.find_memory_mapped_io(addr) {
-            map.borrow().read(addr, self)
+            map.borrow_mut().read(addr, self)
         } else {
             panic!("invalid address read: {:#010x}", addr.0);
             // 0xdead_beefu32.into_word()
@@ -498,7 +507,6 @@ impl Cpu {
     }
 
     pub fn step(&mut self) {
-        self.machine_timer.borrow_mut().progress(1);
         self.cycle += 1;
         self.csr_regs[0xc00] = ((self.cycle & 0xffff_ffff) as u32).into_word();
         self.csr_regs[0xc80] = ((self.cycle >> 32) as u32).into_word();
@@ -513,9 +521,19 @@ impl Cpu {
             cpu.csr_regs[0x341] = cpu.pc;
             cpu.pc = cpu.csr_regs[0x305] & !1.into_word();
         };
-        if self.csr_regs[0x300].0 & 8 != 0
+        if self
+            .interrupt_source
+            .as_ref()
+            .map_or(false, |s| s.borrow_mut().step_intr(&self))
+            && self.csr_regs[0x300].0 & 8 != 0
+            && self.csr_regs[0x304].0 & 0x800 != 0
+        {
+            interrupt(self, 0x8000000bu32);
+            return;
+        }
+        if self.machine_timer.borrow_mut().step_intr(&self)
+            && self.csr_regs[0x300].0 & 8 != 0
             && self.csr_regs[0x304].0 & 0x80 != 0
-            && self.machine_timer.borrow().is_intr()
         {
             interrupt(self, 0x80000007u32);
             // println!("timer interrupt!");
