@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::fmt;
 use std::num::Wrapping;
@@ -367,6 +367,7 @@ pub struct Cpu {
     memory_map: Vec<MemoryMap>,
     interrupt_source: Option<Rc<RefCell<dyn InterruptSource>>>,
     pub ram: Vec<Word>,
+    pub break_hit: Cell<bool>,
 }
 
 impl fmt::Display for Cpu {
@@ -406,6 +407,7 @@ impl Cpu {
             memory_map: vec![],
             interrupt_source: Option::None,
             ram: vec![0.into_word(); Self::RAM_SIZE_IN_WORD],
+            break_hit: false.into(),
         };
         cpu.memory_map
             .push(MemoryMap::new(0x30002000, 16, cpu.machine_timer.clone()));
