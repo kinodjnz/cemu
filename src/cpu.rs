@@ -176,6 +176,15 @@ pub trait Immediate<T, W>: BitField<T> {
     fn clwsp_uimm(&self) -> W;
     fn cswsp_uimm(&self) -> W;
     fn csr_uimm(&self) -> W;
+    fn cclsb_uimm(&self) -> W;
+    fn cclsh_uimm(&self) -> W;
+    fn ccsw0_uimm(&self) -> W;
+    fn ccsb0_uimm(&self) -> W;
+    fn ccsh0_uimm(&self) -> W;
+    fn ccaui_uimm(&self) -> W;
+    fn ccb_imm(&self) -> W;
+    fn cca2w_imm(&self) -> W;
+    fn cca2b_imm(&self) -> W;
 }
 
 impl Immediate<u32, Word> for Word {
@@ -289,6 +298,56 @@ impl Immediate<u32, Word> for Word {
 
     fn csr_uimm(&self) -> Word {
         self.bf(19, 15).into_word().zero_expand(5)
+    }
+
+    fn cclsb_uimm(&self) -> Word {
+        (self.bf(11, 10) << 3 | self.bf(6, 5) << 1 | self.bf(12, 12))
+            .into_word()
+            .zero_expand(5)
+    }
+
+    fn cclsh_uimm(&self) -> Word {
+        (self.bf(10, 10) << 3 | self.bf(6, 5) << 1)
+            .into_word()
+            .zero_expand(4)
+    }
+
+    fn ccsw0_uimm(&self) -> Word {
+        (self.bf(5, 5) << 6 | self.bf(4, 3) << 4 | self.bf(10, 10) << 3 | self.bf(6, 6) << 2)
+            .into_word()
+            .zero_expand(7)
+    }
+
+    fn ccsb0_uimm(&self) -> Word {
+        (self.bf(10, 10) << 3 | self.bf(6, 4))
+            .into_word()
+            .zero_expand(4)
+    }
+
+    fn ccsh0_uimm(&self) -> Word {
+        (self.bf(4, 4) << 4 | self.bf(10, 10) << 3 | self.bf(6, 5) << 1)
+            .into_word()
+            .zero_expand(5)
+    }
+
+    fn ccaui_uimm(&self) -> Word {
+        (self.bf(12, 5) << 12).into_word().zero_expand(20)
+    }
+
+    fn ccb_imm(&self) -> Word {
+        (self.bf(12, 10) << 3 | self.bf(6, 5) << 1)
+            .into_word()
+            .sign_expand(6)
+    }
+
+    fn cca2w_imm(&self) -> Word {
+        (self.bf(12, 12) << 6 | self.bf(5, 5) << 5 | self.bf(11, 10) << 3 | self.bf(6, 6) << 2)
+            .into_word()
+            .sign_expand(7)
+    }
+
+    fn cca2b_imm(&self) -> Word {
+        self.bf(12, 10).into_word().sign_expand(3)
     }
 }
 
@@ -675,6 +734,12 @@ impl Cpu {
                         (5, 0x01) => self.write_reg(rd, data1.divu(&data2)), // divu
                         (6, 0x01) => self.write_reg(rd, data1.rem(&data2)), // rem
                         (7, 0x01) => self.write_reg(rd, data1.remu(&data2)), // remu
+                        (5, funct7) if funct7 & 3 == 3 => {
+                            // cmov
+                            let rs3 = inst.bf(31, 27);
+                            let data3 = self.read_reg(rs3);
+                            self.write_reg(rd, if data2 != 0.into_word() { data1 } else { data3 });
+                        }
                         _ => panic!("unknown alu reg inst"),
                     }
                 }
@@ -761,6 +826,17 @@ impl Cpu {
                         (3, 1, 0) => self.write_reg(rd, self.read_reg(rd) ^ self.read_reg(rs)), // c.xor
                         (3, 2, 0) => self.write_reg(rd, self.read_reg(rd) | self.read_reg(rs)), // c.or
                         (3, 3, 0) => self.write_reg(rd, self.read_reg(rd) & self.read_reg(rs)), // c.and
+                        // cramp insns.
+                        (3, 2, 1) => self.write_reg(rd, self.read_reg(rd) * self.read_reg(rs)), // c.mul
+                        (3, 3, 1) => match inst.bf(4, 2) {
+                            0 => self.write_reg(rd, self.read_reg(rd).zero_expand(8)), // c.zext.b
+                            1 => self.write_reg(rd, self.read_reg(rd).sign_expand(8)), // c.sext.b
+                            2 => self.write_reg(rd, self.read_reg(rd).zero_expand(16)), // c.zext.h
+                            3 => self.write_reg(rd, self.read_reg(rd).sign_expand(16)), // c.sext.h
+                            5 => self.write_reg(rd, !self.read_reg(rd)),               // c.not
+                            6 => self.write_reg(rd, -self.read_reg(rd)),               // c.neg
+                            _ => panic!("unknown cramp arithmetic inst"),
+                        },
                         _ => panic!("unknown rvc arithmetic inst"),
                     }
                 }
@@ -807,6 +883,114 @@ impl Cpu {
                     // c.swsp
                     let rs = inst.bf(6, 2);
                     self.store_word(self.read_reg(2) + inst.cswsp_uimm(), self.read_reg(rs));
+                }
+                // Cramp insns.
+                (0, 1) => {
+                    // c.lb
+                    let rd = inst.bf(4, 2) + 8;
+                    let rs1 = inst.bf(9, 7) + 8;
+                    let addr = self.read_reg(rs1) + inst.cclsb_uimm();
+                    self.write_reg(rd, self.load_subword(addr).sign_expand(8));
+                }
+                (0, 3) => {
+                    // c.lbu
+                    let rd = inst.bf(4, 2) + 8;
+                    let rs1 = inst.bf(9, 7) + 8;
+                    let addr = self.read_reg(rs1) + inst.cclsb_uimm();
+                    self.write_reg(rd, self.load_subword(addr).zero_expand(8));
+                }
+                (0, 4) => {
+                    // c.beq
+                    let rs2 = inst.bf(4, 2) + 8;
+                    let rs1 = inst.bf(9, 7) + 8;
+                    if self.read_reg(rs1) == self.read_reg(rs2) {
+                        next_pc = self.pc + inst.ccb_imm()
+                    }
+                }
+                (0, 5) => {
+                    // c.bne
+                    let rs2 = inst.bf(4, 2) + 8;
+                    let rs1 = inst.bf(9, 7) + 8;
+                    if self.read_reg(rs1) != self.read_reg(rs2) {
+                        next_pc = self.pc + inst.ccb_imm()
+                    }
+                }
+                (0, 7) => {
+                    // c.auipc
+                    let rd = inst.bf(4, 2) + 8;
+                    self.write_reg(rd, self.pc + inst.ccaui_uimm());
+                }
+                (2, 1) => {
+                    let rd = inst.bf(4, 2) + 8;
+                    let rs2 = rd;
+                    let rs1 = inst.bf(9, 7) + 8;
+                    let funct2 = inst.bf(12, 11);
+                    match funct2 {
+                        0..=2 => {
+                            let addr = self.read_reg(rs1) + inst.cclsh_uimm();
+                            match funct2 {
+                                0 => self.write_reg(rd, self.load_subword(addr).sign_expand(16)), // c.lh
+                                1 => self.write_reg(rd, self.load_subword(addr).zero_expand(16)), // c.lhu
+                                _ => self.store_subword(addr, self.read_reg(rs2), 16), // c.sh
+                            }
+                        }
+                        3 if inst.bf(2, 2) == 0 => {
+                            // c.sw0
+                            let addr = self.read_reg(rs1) + inst.ccsw0_uimm();
+                            self.store_word(addr, 0.into_word());
+                        }
+                        3 if inst.bf(3, 2) == 1 => {
+                            // c.sb0
+                            let addr = self.read_reg(rs1) + inst.ccsb0_uimm();
+                            self.store_subword(addr, 0.into_word(), 8);
+                        }
+                        3 if inst.bf(3, 2) == 3 => {
+                            // c.sh0
+                            let addr = self.read_reg(rs1) + inst.ccsh0_uimm();
+                            self.store_subword(addr, 0.into_word(), 16);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                (2, 3) => {
+                    // c.sb
+                    let rs2 = inst.bf(4, 2) + 8;
+                    let rs1 = inst.bf(9, 7) + 8;
+                    let addr = self.read_reg(rs1) + inst.cclsb_uimm();
+                    self.store_subword(addr, self.read_reg(rs2), 8);
+                }
+                (2, 5) => {
+                    // c.addi2w
+                    let rd = inst.bf(4, 2) + 8;
+                    let rs1 = inst.bf(9, 7) + 8;
+                    self.write_reg(rd, self.read_reg(rs1) + inst.cca2w_imm());
+                }
+                (2, 7) => {
+                    let rd = inst.bf(4, 2) + 8;
+                    let rs1 = inst.bf(9, 7) + 8;
+                    let funct2 = inst.bf(6, 5);
+                    match funct2 {
+                        0 | 2 | 3 => {
+                            let rs2 = inst.bf(12, 10) + 8;
+                            let data1 = self.read_reg(rs1);
+                            let data2 = self.read_reg(rs2);
+                            match funct2 {
+                                0 => self.write_reg(rd, data1 + data2),             // c.add2
+                                2 => self.write_reg(rd, set_if(data1.slt(&data2))), // c.slt
+                                3 => self.write_reg(rd, set_if(data1 < data2)),     // c.sltu
+                                _ => unreachable!(),
+                            }
+                        }
+                        _ => {
+                            let imm = inst.bf(12, 10);
+                            let data1 = self.read_reg(rs1);
+                            match imm {
+                                0 => self.write_reg(rd, set_if(data1 == 0.into_word())), // c.seqz
+                                4 => self.write_reg(rd, set_if(data1 != 0.into_word())), // c.snez
+                                _ => self.write_reg(rd, data1 + inst.cca2b_imm()),       // c.addi2b
+                            }
+                        }
+                    }
                 }
                 _ => panic!("unknown rvc inst"),
             }
