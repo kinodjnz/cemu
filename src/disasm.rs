@@ -100,6 +100,7 @@ pub enum Instruction {
     Divu(Register, Register, Register),
     Rem(Register, Register, Register),
     Remu(Register, Register, Register),
+    CMov(Register, Register, Register, Register),
     CAddi4spn(Register, Word),
     CLw(Register, Register, Word),
     CSw(Register, Register, Word),
@@ -127,6 +128,32 @@ pub enum Instruction {
     CJalr(Register),
     CAdd(Register, Register),
     CSwsp(Register, Word),
+    CLb(Register, Register, Word),
+    CLbu(Register, Register, Word),
+    CLh(Register, Register, Word),
+    CLhu(Register, Register, Word),
+    CSb(Register, Register, Word),
+    CSh(Register, Register, Word),
+    CSb0(Register, Word),
+    CSh0(Register, Word),
+    CSw0(Register, Word),
+    CAuipc(Register, Word),
+    CMul(Register, Register),
+    CZextB(Register),
+    CSextB(Register),
+    CZextH(Register),
+    CSextH(Register),
+    CNot(Register),
+    CNeg(Register),
+    CBeq(Register, Register, Word),
+    CBne(Register, Register, Word),
+    CAddi2w(Register, Register, Word),
+    CAdd2(Register, Register, Register),
+    CSeqz(Register, Register),
+    CSnez(Register, Register),
+    CAddi2b(Register, Register, Word),
+    CSlt(Register, Register, Register),
+    CSltu(Register, Register, Register),
     Unknown(Word),
 }
 
@@ -139,6 +166,7 @@ pub fn disasm(inst: Word) -> Instruction {
         let rd = Register(inst.bf(11, 7));
         let rs1 = Register(inst.bf(19, 15));
         let rs2 = Register(inst.bf(24, 20));
+        let rs3 = Register(inst.bf(31, 27));
         let csr = Csr(inst.bf(31, 20));
         match opcode {
             0x37 => Instruction::Lui(rd, inst.u_imm()),
@@ -183,25 +211,26 @@ pub fn disasm(inst: Word) -> Instruction {
                 (5, 0x20) => Instruction::Srai(rd, rs1, inst.bf(24, 20) as usize),
                 _ => Instruction::Unknown(inst),
             },
-            0x33 => match (inst.bf(14, 12), inst.bf(31, 25)) {
-                (0, 0x00) => Instruction::Add(rd, rs1, rs2),
-                (0, 0x20) => Instruction::Sub(rd, rs1, rs2),
-                (1, 0x00) => Instruction::Sll(rd, rs1, rs2),
-                (2, 0x00) => Instruction::Slt(rd, rs1, rs2),
-                (3, 0x00) => Instruction::Sltu(rd, rs1, rs2),
-                (4, 0x00) => Instruction::Xor(rd, rs1, rs2),
-                (5, 0x00) => Instruction::Srl(rd, rs1, rs2),
-                (5, 0x20) => Instruction::Sra(rd, rs1, rs2),
-                (6, 0x00) => Instruction::Or(rd, rs1, rs2),
-                (7, 0x00) => Instruction::And(rd, rs1, rs2),
-                (0, 0x01) => Instruction::Mul(rd, rs1, rs2),
-                (1, 0x01) => Instruction::Mulh(rd, rs1, rs2),
-                (2, 0x01) => Instruction::Mulhsu(rd, rs1, rs2),
-                (3, 0x01) => Instruction::Mulhu(rd, rs1, rs2),
-                (4, 0x01) => Instruction::Div(rd, rs1, rs2),
-                (5, 0x01) => Instruction::Divu(rd, rs1, rs2),
-                (6, 0x01) => Instruction::Rem(rd, rs1, rs2),
-                (7, 0x01) => Instruction::Remu(rd, rs1, rs2),
+            0x33 => match (inst.bf(14, 12), inst.bf(26, 26), inst.bf(31, 27), inst.bf(25, 25)) {
+                (0, 0, 0x00, 0) => Instruction::Add(rd, rs1, rs2),
+                (0, 0, 0x08, 0) => Instruction::Sub(rd, rs1, rs2),
+                (1, 0, 0x00, 0) => Instruction::Sll(rd, rs1, rs2),
+                (2, 0, 0x00, 0) => Instruction::Slt(rd, rs1, rs2),
+                (3, 0, 0x00, 0) => Instruction::Sltu(rd, rs1, rs2),
+                (4, 0, 0x00, 0) => Instruction::Xor(rd, rs1, rs2),
+                (5, 0, 0x00, 0) => Instruction::Srl(rd, rs1, rs2),
+                (5, 0, 0x08, 0) => Instruction::Sra(rd, rs1, rs2),
+                (6, 0, 0x00, 0) => Instruction::Or(rd, rs1, rs2),
+                (7, 0, 0x00, 0) => Instruction::And(rd, rs1, rs2),
+                (0, 0, 0x00, 1) => Instruction::Mul(rd, rs1, rs2),
+                (1, 0, 0x00, 1) => Instruction::Mulh(rd, rs1, rs2),
+                (2, 0, 0x00, 1) => Instruction::Mulhsu(rd, rs1, rs2),
+                (3, 0, 0x00, 1) => Instruction::Mulhu(rd, rs1, rs2),
+                (4, 0, 0x00, 1) => Instruction::Div(rd, rs1, rs2),
+                (5, 0, 0x00, 1) => Instruction::Divu(rd, rs1, rs2),
+                (6, 0, 0x00, 1) => Instruction::Rem(rd, rs1, rs2),
+                (7, 0, 0x00, 1) => Instruction::Remu(rd, rs1, rs2),
+                (5, 1, _, 1) => Instruction::CMov(rd, rs2, rs1, rs3),
                 _ => Instruction::Unknown(inst),
             },
             0x73 => match inst.0 {
@@ -224,10 +253,16 @@ pub fn disasm(inst: Word) -> Instruction {
         let rs = Register(inst.bf(6, 2));
         let r1c = Register(inst.bf(9, 7) + 8);
         let r2c = Register(inst.bf(4, 2) + 8);
+        let r3c = Register(inst.bf(12, 10) + 8);
         match (opcode & 3, inst.bf(15, 13)) {
             (0, 0) => Instruction::CAddi4spn(r2c, inst.ciw_uimm()),
+            (0, 1) => Instruction::CLb(r2c, r1c, inst.cclsb_uimm()),
             (0, 2) => Instruction::CLw(r2c, r1c, inst.clw_uimm()),
+            (0, 3) => Instruction::CLbu(r2c, r1c, inst.cclsb_uimm()),
+            (0, 4) => Instruction::CBeq(r1c, r2c, inst.ccb_imm()),
+            (0, 5) => Instruction::CBne(r1c, r2c, inst.ccb_imm()),
             (0, 6) => Instruction::CSw(r2c, r1c, inst.csw_uimm()),
+            (0, 7) => Instruction::CAuipc(r2c, inst.ccaui_uimm()),
             (1, 0) => match rd {
                 Register(0) if inst.ci_imm().0 == 0 => Instruction::CNop(),
                 _ => Instruction::CAddi(rd, inst.ci_imm()),
@@ -246,14 +281,37 @@ pub fn disasm(inst: Word) -> Instruction {
                 (3, 0, 0) => Instruction::CSub(r1c, r2c),
                 (3, 1, 0) => Instruction::CXor(r1c, r2c),
                 (3, 2, 0) => Instruction::COr(r1c, r2c),
+                (3, 2, 1) => Instruction::CMul(r1c, r2c),
                 (3, 3, 0) => Instruction::CAnd(r1c, r2c),
+                (3, 3, 1) => match inst.bf(4, 2) {
+                    0 => Instruction::CZextB(r1c),
+                    1 => Instruction::CSextB(r1c),
+                    2 => Instruction::CZextH(r1c),
+                    3 => Instruction::CSextH(r1c),
+                    5 => Instruction::CNot(r1c),
+                    6 => Instruction::CNeg(r1c),
+                    _ => Instruction::Unknown(inst),
+                }
                 _ => Instruction::Unknown(inst),
             },
             (1, 5) => Instruction::CJ(inst.cj_imm()),
             (1, 6) => Instruction::CBeqz(r1c, inst.cb_imm()),
             (1, 7) => Instruction::CBnez(r1c, inst.cb_imm()),
             (2, 0) => Instruction::CSlli(rd, inst.ci_shamt()),
+            (2, 1) => match inst.bf(12, 11) {
+                0 => Instruction::CLh(r2c, r1c, inst.cclsh_uimm()),
+                1 => Instruction::CLhu(r2c, r1c, inst.cclsh_uimm()),
+                2 => Instruction::CSh(r2c, r1c, inst.cclsh_uimm()),
+                3 => match (inst.bf(2, 2), inst.bf(3, 3)) {
+                    (0, _) => Instruction::CSw0(r1c, inst.ccsw0_uimm()),
+                    (1, 0) => Instruction::CSb0(r1c, inst.ccsb0_uimm()),
+                    (1, 1) => Instruction::CSh0(r1c, inst.ccsh0_uimm()),
+                    _ => Instruction::Unknown(inst),
+                }
+                _ => Instruction::Unknown(inst),
+            }
             (2, 2) => Instruction::CLwsp(rd, inst.clwsp_uimm()),
+            (2, 3) => Instruction::CSb(r2c, r1c, inst.cclsb_uimm()),
             (2, 4) => match (inst.bf(12, 12), rd.0, rs.0) {
                 (0, rs, 0) if rs != 0 => Instruction::CJr(Register(rs)),
                 (0, rd, rs) if rd != 0 => Instruction::CMv(Register(rd), Register(rs)),
@@ -262,7 +320,19 @@ pub fn disasm(inst: Word) -> Instruction {
                 (1, rd, rs) => Instruction::CAdd(Register(rd), Register(rs)),
                 _ => Instruction::Unknown(inst),
             },
+            (2, 5) => Instruction::CAddi2w(r2c, r1c, inst.cca2w_imm()),
             (2, 6) => Instruction::CSwsp(rs, inst.cswsp_uimm()),
+            (2, 7) => match inst.bf(6, 5) {
+                0 => Instruction::CAdd2(r2c, r1c, r3c),
+                1 => match inst.bf(12, 10) {
+                    0 => Instruction::CSeqz(r2c, r1c),
+                    4 => Instruction::CSnez(r2c, r1c),
+                    _ => Instruction::CAddi2b(r2c, r1c, inst.cca2b_imm()),
+                }
+                2 => Instruction::CSlt(r2c, r1c, r3c),
+                3 => Instruction::CSltu(r2c, r1c, r3c),
+                _ => Instruction::Unknown(inst),
+            }
             _ => Instruction::Unknown(inst),
         }
     }
@@ -326,6 +396,7 @@ impl fmt::Display for LocatedInstruction<'_> {
             Divu(rd, rs1, rs2) => write!(f, "divu {rd}, {rs1}, {rs2}"),
             Rem(rd, rs1, rs2) => write!(f, "rem {rd}, {rs1}, {rs2}"),
             Remu(rd, rs1, rs2) => write!(f, "remu {rd}, {rs1}, {rs2}"),
+            CMov(rd, rs2, rs1, rs3) => write!(f, "cmov {rd}, {rs2}, {rs1}, {rs3}"),
             CAddi4spn(rd, imm) => write!(f, "addi {rd}, sp, {imm}"),
             CLw(rd, rs1, imm) => write!(f, "lw {rd}, {imm}({rs1})"),
             CSw(rs2, rs1, imm) => write!(f, "sw {rs2}, {imm}({rs1})"),
@@ -353,7 +424,33 @@ impl fmt::Display for LocatedInstruction<'_> {
             CJalr(rs) => write!(f, "jalr ra, 0({rs})"),
             CAdd(rd, rs) => write!(f, "add {rd}, {rd}, {rs}"),
             CSwsp(rs, imm) => write!(f, "sw {rs}, {imm}(sp)"),
-            _ => write!(f, "{:?}", self.0),
+            CLb(rd, rs1, imm) => write!(f, "lb {rd}, {imm}({rs1})"),
+            CLbu(rd, rs1, imm) => write!(f, "lbu {rd}, {imm}({rs1})"),
+            CLh(rd, rs1, imm) => write!(f, "lh {rd}, {imm}({rs1})"),
+            CLhu(rd, rs1, imm) => write!(f, "lhu {rd}, {imm}({rs1})"),
+            CSb(rs2, rs1, imm) => write!(f, "sb {rs2}, {imm}({rs1})"),
+            CSh(rs2, rs1, imm) => write!(f, "sh {rs2}, {imm}({rs1})"),
+            CSb0(rs1, imm) => write!(f, "sb zero, {imm}({rs1})"),
+            CSh0(rs1, imm) => write!(f, "sh zero, {imm}({rs1})"),
+            CSw0(rs1, imm) => write!(f, "sw zero, {imm}({rs1})"),
+            CAuipc(rd, imm) => write!(f, "auipc {rd}, {:#010x}", self.1 + imm),
+            CMul(rd, rs) => write!(f, "mul {rd}, {rd}, {rs}"),
+            CZextB(rd) => write!(f, "zext.b {rd}, {rd}"),
+            CSextB(rd) => write!(f, "sext.b {rd}, {rd}"),
+            CZextH(rd) => write!(f, "zext.h {rd}, {rd}"),
+            CSextH(rd) => write!(f, "sext.h {rd}, {rd}"),
+            CNot(rd) => write!(f, "not {rd}, {rd}"),
+            CNeg(rd) => write!(f, "neg {rd}, {rd}"),
+            CBeq(rs1, rs2, imm) => write!(f, "beq {rs1}, {rs2}, {:#010x}", self.1 + imm),
+            CBne(rs1, rs2, imm) => write!(f, "bne {rs1}, {rs2}, {:#010x}", self.1 + imm),
+            CAddi2w(rd, rs1, imm) => write!(f, "addi {rd}, {rs1}, {}", imm.0 as i32),
+            CAdd2(rd, rs1, rs2) => write!(f, "add {rd}, {rs1}, {rs2}"),
+            CSeqz(rd, rs1) => write!(f, "seqz {rd}, {rs1}"),
+            CSnez(rd, rs1) => write!(f, "snez {rd}, {rs1}"),
+            CAddi2b(rd, rs1, imm) => write!(f, "addi {rd}, {rs1}, {}", imm.0 as i32),
+            CSlt(rd, rs1, rs2) => write!(f, "slt {rd}, {rs1}, {rs2}"),
+            CSltu(rd, rs1, rs2) => write!(f, "sltu {rd}, {rs1}, {rs2}"),
+             _ => write!(f, "{:?}", self.0),
         }
     }
 }
