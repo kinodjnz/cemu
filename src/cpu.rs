@@ -158,6 +158,61 @@ impl BitField<u32> for Word {
     }
 }
 
+pub trait ZbbOps {
+    fn leading_zeros(&self) -> Self;
+    fn trailing_zeros(&self) -> Self;
+    fn count_ones(&self) -> Self;
+    fn min_signed(&self, rhs: Self) -> Self;
+    fn max_signed(&self, rhs: Self) -> Self;
+    fn swap_bytes(&self) -> Self;
+    fn rotate_left(&self, shamt: u32) -> Self;
+    fn rotate_right(&self, shamt: u32) -> Self;
+    fn sextb(&self) -> Self;
+    fn sexth(&self) -> Self;
+}
+
+impl ZbbOps for Word {
+    fn leading_zeros(&self) -> Word {
+        self.0.leading_zeros().into_word()
+    }
+
+    fn trailing_zeros(&self) -> Word {
+        self.0.trailing_zeros().into_word()
+    }
+
+    fn count_ones(&self) -> Word {
+        self.0.count_ones().into_word()
+    }
+
+    fn min_signed(&self, rhs: Self) -> Self {
+        ((self.0 as i32).min(rhs.0 as i32) as u32).into_word()
+    }
+
+    fn max_signed(&self, rhs: Self) -> Self {
+        ((self.0 as i32).max(rhs.0 as i32) as u32).into_word()
+    }
+
+    fn swap_bytes(&self) -> Self {
+        self.0.swap_bytes().into_word()
+    }
+
+    fn rotate_left(&self, shamt: u32) -> Self {
+        self.0.rotate_left(shamt).into_word()
+    }
+
+    fn rotate_right(&self, shamt: u32) -> Self {
+        self.0.rotate_right(shamt).into_word()
+    }
+
+    fn sextb(&self) -> Self {
+        ((self.0 as i8) as i32 as u32).into_word()
+    }
+
+    fn sexth(&self) -> Self {
+        ((self.0 as i16) as i32 as u32).into_word()
+    }
+}
+
 pub trait Immediate<T, W>: BitField<T> {
     fn u_imm(&self) -> W;
     fn j_imm(&self) -> W;
@@ -704,6 +759,19 @@ impl Cpu {
                         (1, 0x00) => self.write_reg(rd, data1 << shamt), // slli
                         (5, 0x00) => self.write_reg(rd, data1 >> shamt), // srli
                         (5, 0x20) => self.write_reg(rd, data1.sra(shamt)), // srai
+                        (5, 0x30) => self.write_reg(rd, data1.rotate_right(shamt as u32)), // rori
+                        (1, 0x30) => match inst.bf(24, 20) {
+                            0 => self.write_reg(rd, data1.leading_zeros()), // clz
+                            1 => self.write_reg(rd, data1.trailing_zeros()), // ctz
+                            2 => self.write_reg(rd, data1.count_ones()),    // cpop
+                            4 => self.write_reg(rd, data1.sextb()),         // sext.b
+                            5 => self.write_reg(rd, data1.sexth()),         // sext.h
+                            _ => panic!("unknown alu imm bit inst"),
+                        },
+                        (5, 0x34) => match inst.bf(24, 20) {
+                            0x18 => self.write_reg(rd, data1.swap_bytes()), // rev8
+                            _ => panic!("unknown alu imm rev8 inst"),
+                        },
                         _ => panic!("unknown alu imm inst"),
                     }
                 }
@@ -719,21 +787,34 @@ impl Cpu {
                         (0, 0x00) => self.write_reg(rd, data1 + data2), // add
                         (0, 0x20) => self.write_reg(rd, data1 - data2), // sub
                         (1, 0x00) => self.write_reg(rd, data1 << shamt), // sll
+                        (1, 0x30) => self.write_reg(rd, data1.rotate_left(shamt as u32)), // rol
                         (2, 0x00) => self.write_reg(rd, set_if(data1.slt(&data2))), // slt
                         (3, 0x00) => self.write_reg(rd, set_if(data1 < data2)), // sltu
                         (4, 0x00) => self.write_reg(rd, data1 ^ data2), // xor
+                        (4, 0x20) => self.write_reg(rd, data1 ^ !data2), // xnor
                         (5, 0x00) => self.write_reg(rd, data1 >> shamt), // srl
                         (5, 0x20) => self.write_reg(rd, data1.sra(shamt)), // sra
+                        (5, 0x30) => self.write_reg(rd, data1.rotate_right(shamt as u32)), // ror
                         (6, 0x00) => self.write_reg(rd, data1 | data2), // or
+                        (6, 0x20) => self.write_reg(rd, data1 | !data2), // orn
                         (7, 0x00) => self.write_reg(rd, data1 & data2), // and
-                        (0, 0x01) => self.write_reg(rd, data1 * data2), // mul
-                        (1, 0x01) => self.write_reg(rd, data1.mulh(&data2)), // mulh
-                        (2, 0x01) => self.write_reg(rd, data1.mulhsu(&data2)), // mulhsu
-                        (3, 0x01) => self.write_reg(rd, data1.mulhu(&data2)), // mulhu
-                        (4, 0x01) => self.write_reg(rd, data1.div(&data2)), // div
-                        (5, 0x01) => self.write_reg(rd, data1.divu(&data2)), // divu
-                        (6, 0x01) => self.write_reg(rd, data1.rem(&data2)), // rem
-                        (7, 0x01) => self.write_reg(rd, data1.remu(&data2)), // remu
+                        (7, 0x20) => self.write_reg(rd, data1 & !data2), // andn
+                        (4, 0x04) => match inst.bf(24, 20) {
+                            0 => self.write_reg(rd, data1 & 0xffff.into_word()), // zext.h
+                            _ => panic!("unknown alu reg bit inst"),
+                        },
+                        (4, 0x05) => self.write_reg(rd, data1.min_signed(data2)), // min
+                        (5, 0x05) => self.write_reg(rd, data1.min(data2)),        // minu
+                        (6, 0x05) => self.write_reg(rd, data1.max_signed(data2)), // max
+                        (7, 0x05) => self.write_reg(rd, data1.max(data2)),        // maxu
+                        (0, 0x01) => self.write_reg(rd, data1 * data2),           // mul
+                        (1, 0x01) => self.write_reg(rd, data1.mulh(&data2)),      // mulh
+                        (2, 0x01) => self.write_reg(rd, data1.mulhsu(&data2)),    // mulhsu
+                        (3, 0x01) => self.write_reg(rd, data1.mulhu(&data2)),     // mulhu
+                        (4, 0x01) => self.write_reg(rd, data1.div(&data2)),       // div
+                        (5, 0x01) => self.write_reg(rd, data1.divu(&data2)),      // divu
+                        (6, 0x01) => self.write_reg(rd, data1.rem(&data2)),       // rem
+                        (7, 0x01) => self.write_reg(rd, data1.remu(&data2)),      // remu
                         (5, funct7) if funct7 & 3 == 3 => {
                             // cmov
                             let rs3 = inst.bf(31, 27);

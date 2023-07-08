@@ -1,3 +1,5 @@
+#![allow(unstable_name_collisions)]
+
 mod config;
 mod cpu;
 mod disasm;
